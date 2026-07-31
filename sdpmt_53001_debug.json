@@ -206,8 +206,8 @@
         "params": {
           "input_data": """{
             "request": {
-              "subject": "TEST PLEASE IGNORE - {{ ctx.metadata.amdb_name }} Alert - {{ ctx.payload.key }} - {{ ctx.payload.details.hits.hits.0._source.cloud.account.name }}",
-              "description": "<h3>{{ ctx.metadata.amdb_name }}</h3> <p>Cloud Account: {{ ctx.payload.details.hits.hits.0._source.cloud.account.name }}</p> <p>Session ID: {{ ctx.payload.key }}</p> <p><a href='{{ctx.metadata.amdb_link}}'>AMDB</a></p> <p>To open the dashboard, please copy the link below</p> <p><font color=blue>{{ ctx.payload.dashboard_link }}</font></p>",
+              "subject": "TEST PLEASE IGNORE - {{ ctx.metadata.amdb_name }} Alert - {{ ctx.payload.key }} - {{ ctx.payload.cloud_account_name }}",
+              "description": "<h3>{{ ctx.metadata.amdb_name }}</h3> <p>Cloud Account: {{ ctx.payload.cloud_account_name }}</p> <p>Session ID: {{ ctx.payload.key }}</p> <p><a href='{{ctx.metadata.amdb_link}}'>AMDB</a></p> <p>To open the dashboard, please copy the link below</p> <p><font color=blue>{{ ctx.payload.dashboard_link }}</font></p>",
               "requester": {
                 "name": "service-elastic"
               },
@@ -218,7 +218,7 @@
                 "name": "Report an Incident"
               },
               "priority": {
-                "name": "{{ ctx.metadata.ticket_priority }}"
+                "name": "{{ ctx.payload.ticket_priority }}"
               },
               "group": {
                 "name": "{{ ctx.metadata.ticket_group }}"
@@ -236,8 +236,8 @@
                 "udf_sline_49805": "{{ ctx.payload.key }}",
                 "udf_sline_53703": "{{ ctx.metadata.service_name }}",
                 "udf_sline_55201": "",
-                "udf_sline_65102": "{{ ctx.payload.details.hits.hits.0._source.cloud.account.name }}",
-                "udf_sline_65104": "{{ ctx.payload.details.hits.hits.0._source.cloud.region }}"
+                "udf_sline_65102": "{{ ctx.payload.cloud_account_name }}",
+                "udf_sline_65104": "{{ ctx.payload.cloud_region }}"
               },
               "category": {
                 "name": "Elastic-AWS-MT"
@@ -273,10 +273,32 @@
       "source": """
         // store two lists of host buckets
         List to_open = [];
+
+        // build a session_id -> bucket lookup so we can pull cloud.account.name / cloud.region per session
+        Map session_details = new HashMap();
+        for (def bucket: ctx.payload.errors.aggregations.session_id.buckets) {
+          session_details.put(bucket.key, bucket);
+        }
+
         for (def session: ctx.payload.sessions._value) {
           Map host = new HashMap();
           host.key = session;
           host.dashboard_link = ctx.metadata.dashboard_link.replace('SESSION_REPLACEMENT', host.key);
+
+          def bucket = session_details.get(session);
+          def source = bucket.details.hits.hits.0._source;
+          host.cloud_account_name = source.cloud.account.name;
+          host.cloud_region = source.cloud.region;
+
+          // priority driven by the cloud account: prd -> P1, tst -> P3
+          if (host.cloud_account_name == 'hedgeserv-app-prd') {
+            host.ticket_priority = '1 - Critical';
+          } else if (host.cloud_account_name == 'hedgeserv-app-tst') {
+            host.ticket_priority = '3 - Moderate';
+          } else {
+            host.ticket_priority = ctx.metadata.ticket_priority;
+          }
+
           to_open.add(host);
         }
 
