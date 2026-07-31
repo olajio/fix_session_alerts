@@ -243,11 +243,11 @@
                 "name": "Elastic-AWS-MT"
               }
             }
-          }""",
-          "headers": {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "technician_key": "XXXXXXXXXXXXXXXXX"
-          }
+          }"""
+        },
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "technician_key": "XXXXXXXXXXXXXXXXX"
         }
       }
     }
