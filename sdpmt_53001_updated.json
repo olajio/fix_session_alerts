@@ -266,7 +266,11 @@
     "ticket_group": "Monitoring and Analytics - Testing",
     "id": "sdpmt_53001",
     "lookup_interval": 5,
-    "data_hot": "data_hot"
+    "data_hot": "data_hot",
+    "priority_by_account": {
+      "hedgeserv-app-prd": "1 - Critical",
+      "hedgeserv-app-tst": "3 - Moderate"
+    }
   },
   "transform": {
     "script": {
@@ -290,11 +294,11 @@
           host.cloud_account_name = source.cloud.account.name;
           host.cloud_region = source.cloud.region;
 
-          // priority driven by the cloud account: prd -> P1, tst -> P3
-          if (host.cloud_account_name == 'hedgeserv-app-prd') {
-            host.ticket_priority = '1 - Critical';
-          } else if (host.cloud_account_name == 'hedgeserv-app-tst') {
-            host.ticket_priority = '3 - Moderate';
+          // priority driven by the cloud account via ctx.metadata.priority_by_account;
+          // falls back to ctx.metadata.ticket_priority if the account isn't mapped
+          Map priority_map = ctx.metadata.priority_by_account;
+          if (priority_map != null && priority_map.containsKey(host.cloud_account_name)) {
+            host.ticket_priority = priority_map.get(host.cloud_account_name);
           } else {
             host.ticket_priority = ctx.metadata.ticket_priority;
           }
