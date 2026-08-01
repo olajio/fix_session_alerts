@@ -397,16 +397,30 @@
         // store two lists of host buckets
         List to_open = [];
         List to_comment = [];
+        String suffix = '_FromAdmin';
         for (def session: ctx.payload.sessions._value) {
           Map host = new HashMap();
           host.key = session;
-          host.session_id = session.replace('_FromAdmin', '');
+          // strip only the trailing suffix (replace-all would also drop the marker
+          // when a fix_sessionid value contains "_FromAdmin" internally)
+          if (session.endsWith(suffix)) {
+            host.session_id = session.substring(0, session.length() - suffix.length());
+          } else {
+            host.session_id = session;
+          }
           host.dashboard_link = ctx.metadata.dashboard_link.replace('SESSION_REPLACEMENT', host.session_id);
 
           def bucket = session_details.get(host.session_id);
-          def source = bucket.data.hits.hits.0._source;
-          host.cloud_account_name = source.cloud.account.name;
-          host.cloud_region = source.cloud.region;
+          if (bucket != null) {
+            def source = bucket.data.hits.hits.0._source;
+            host.cloud_account_name = source.cloud.account.name;
+            host.cloud_region = source.cloud.region;
+          } else {
+            // shouldn't happen (sessions._value is derived from these buckets), but keep the
+            // watcher alive if it ever does; the ticket will just show blank cloud fields
+            host.cloud_account_name = '';
+            host.cloud_region = '';
+          }
 
           // priority driven by the cloud account via ctx.metadata.priority_by_account;
           // falls back to ctx.metadata.ticket_priority if the account isn't mapped
