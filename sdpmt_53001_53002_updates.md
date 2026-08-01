@@ -58,6 +58,52 @@ sibling watchers before their metadata maps are populated.
 condition. Both files structurally validated: `headers` sits as a sibling
 of `params` under `webhook`, JSON parses cleanly.
 
+## Follow-up fix: null_pointer_exception on bucket lookup
+
+After the initial rollout, `sdpmt_53002_from_admin_updated.json` threw
+`null_pointer_exception ... cannot access method/field [data] from a null
+def reference` at
+`def source = bucket.data.hits.hits.0._source`.
+
+Cause: `session.replace('_FromAdmin', '')` replaces **all** occurrences,
+not just the trailing suffix appended by the `sessions` transform. If a
+real `labels.fix_sessionid` value ends in (or contains) `_FromAdmin`, the
+strip removes too much, and the cleaned name no longer matches any
+errors-bucket key. `session_details.get(host.session_id)` returns null,
+and dereferencing `bucket.data` throws NPE.
+
+Two targeted changes to the top-level transform:
+
+1. **Strip only the trailing suffix.** Replace
+   `session.replace('_FromAdmin', '')` with an
+   `endsWith` + `substring` check:
+   ```painless
+   String suffix = '_FromAdmin';
+   if (session.endsWith(suffix)) {
+     host.session_id = session.substring(0, session.length() - suffix.length());
+   } else {
+     host.session_id = session;
+   }
+   ```
+2. **Null-check the bucket lookup.** If `session_details.get(...)` ever
+   returns null in the future, fall back to blank cloud fields and
+   metadata priority instead of throwing:
+   ```painless
+   def bucket = session_details.get(host.session_id);
+   if (bucket != null) {
+     def source = bucket.data.hits.hits.0._source;
+     host.cloud_account_name = source.cloud.account.name;
+     host.cloud_region = source.cloud.region;
+   } else {
+     host.cloud_account_name = '';
+     host.cloud_region = '';
+   }
+   ```
+
+The same null-check was also added to `sdpmt_53001_updated.json` for
+consistency, even though 53001 has no suffix step and shouldn't hit the
+null path.
+
 ## Method notes for the next sibling watcher
 
 - **Copy the debug file, then apply the same 4 hunks.** Metadata addition,
@@ -65,7 +111,15 @@ of `params` under `webhook`, JSON parses cleanly.
   transform enrichment.
 - **Watch for a `_FromAdmin`-style suffix** in the sessions transform (or
   any other suffix). If present, the errors-bucket lookup must be keyed on
-  the *cleaned* session id (`host.session_id`), not the loop variable.
+  the *cleaned* session id (`host.session_id`), not the loop variable —
+  and prefer `endsWith` + `substring` over `replace(...)` so real session
+  ids that contain the marker aren't over-stripped (see the follow-up fix
+  above).
+- **Always null-check the bucket lookup** before dereferencing
+  `bucket.details.…` / `bucket.data.…`. `sessions._value` is derived from
+  the same errors buckets, so this branch shouldn't fire, but the null
+  check prevents a bad strip (or any other future mismatch) from crashing
+  the watcher.
 - **Watch for the top_hits agg name.** 53001 calls it `details`; 53002
   calls it `data`. The path in the transform
   (`bucket.details…` vs `bucket.data…`) must match.

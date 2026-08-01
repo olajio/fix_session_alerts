@@ -290,9 +290,16 @@
           host.dashboard_link = ctx.metadata.dashboard_link.replace('SESSION_REPLACEMENT', host.key);
 
           def bucket = session_details.get(session);
-          def source = bucket.details.hits.hits.0._source;
-          host.cloud_account_name = source.cloud.account.name;
-          host.cloud_region = source.cloud.region;
+          if (bucket != null) {
+            def source = bucket.details.hits.hits.0._source;
+            host.cloud_account_name = source.cloud.account.name;
+            host.cloud_region = source.cloud.region;
+          } else {
+            // shouldn't happen (sessions._value is derived from these buckets), but keep the
+            // watcher alive if it ever does; the ticket will just show blank cloud fields
+            host.cloud_account_name = '';
+            host.cloud_region = '';
+          }
 
           // priority driven by the cloud account via ctx.metadata.priority_by_account;
           // falls back to ctx.metadata.ticket_priority if the account isn't mapped
