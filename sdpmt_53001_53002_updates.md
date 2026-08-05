@@ -104,6 +104,63 @@ The same null-check was also added to `sdpmt_53001_updated.json` for
 consistency, even though 53001 has no suffix step and shouldn't hit the
 null path.
 
+## Follow-up 2: split per-account watchers (`sdpmt_53001_prd_debug.json`, `sdpmt_53001_tst_debug.json`)
+
+The metadata-driven `priority_by_account` map works only when the log for
+a session is present in the errors search, because both the cloud
+account and the priority are derived from that log bucket. That's fine
+for the debug shape (`active.contains(session)`, alert-when-log-exists),
+but 53001 in production runs on `!active.contains(session)` —
+alert-when-log-is-missing. When the log is missing there is no bucket to
+enrich from, so `cloud_account_name` ends up blank, the priority-map
+lookup misses, and every ticket falls back to
+`metadata.ticket_priority = "1 - Critical"` regardless of environment.
+
+`fix_session_schedule` does not carry `cloud.account.name` /
+`cloud.region`, and no field on the host/target identifies the account.
+So the account can only be recovered by scoping the watcher itself to a
+single account.
+
+Two new files were added:
+
+- `sdpmt_53001_prd_debug.json` — scoped to `hedgeserv-app-prd`, priority `1 - Critical`.
+- `sdpmt_53001_tst_debug.json` — scoped to `hedgeserv-app-tst`, priority `3 - Moderate`.
+
+The changes vs `sdpmt_53001_debug.json` (identical shape in both new files
+except for the three metadata values):
+
+1. **`errors` search filter** — `terms.cloud.account.name` array replaced
+   with a `term` filter templated to the metadata value:
+   ```json
+   { "term": { "cloud.account.name": "{{ ctx.metadata.cloud_account_name }}" } }
+   ```
+2. **Metadata** — added `cloud_account_name` as a constant; `id` renamed
+   to `sdpmt_53001_prd` / `sdpmt_53001_tst`; `ticket_priority` set to the
+   correct value for that environment. `priority_by_account` is not
+   used here (single-account scope makes the map redundant).
+3. **Webhook body** —
+   - `subject` and `description` reference `{{ ctx.metadata.cloud_account_name }}` (constant, always populated).
+   - `udf_sline_65102` = `{{ ctx.metadata.cloud_account_name }}`.
+   - `priority.name` = `{{ ctx.metadata.ticket_priority }}` (also constant).
+   - `udf_sline_65104` = `{{ ctx.payload.cloud_region }}` (blank when log missing).
+4. **Transform** — simplified: no more priority lookup, no more
+   `cloud_account_name` enrichment. Only `cloud_region` is enriched from
+   the log bucket when present, blank when missing.
+
+Result: whether the log is present or missing, `cloud_account_name` and
+`ticket_priority` are always correct because they come from metadata, and
+tickets from `hedgeserv-app-tst` outages get P3 as expected.
+`cloud_region` is populated when the log exists (debug flow) and blank
+when it doesn't (real prod alert on missing log); acceptable given no
+alternative source is available.
+
+Both files ship with the production `sessions` transform shape
+(`!active.contains(session)`), matching the flipped
+`sdpmt_53001_debug.json` on `main`.
+
+Not applied to 53002 yet — waiting for confirmation before mirroring
+this shape onto `sdpmt_53002_from_admin`.
+
 ## Method notes for the next sibling watcher
 
 - **Copy the debug file, then apply the same 4 hunks.** Metadata addition,
