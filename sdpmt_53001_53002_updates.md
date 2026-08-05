@@ -158,8 +158,21 @@ Both files ship with the production `sessions` transform shape
 (`!active.contains(session)`), matching the flipped
 `sdpmt_53001_debug.json` on `main`.
 
-Not applied to 53002 yet — waiting for confirmation before mirroring
-this shape onto `sdpmt_53002_from_admin`.
+The same shape has now been mirrored onto `sdpmt_53002_from_admin`:
+
+- `sdpmt_53002_from_admin_prd_debug.json` — scoped to `hedgeserv-app-prd`, priority `1 - Critical`.
+- `sdpmt_53002_from_admin_tst_debug.json` — scoped to `hedgeserv-app-tst`, priority `3 - Moderate`.
+
+Same four hunks apply, with two 53002-specific extras:
+
+- The top-level transform continues to build **both** `to_open` and
+  `to_comment` (53002 opens or comments existing tickets); only the
+  `cloud_account_name` / `ticket_priority` / priority-map derivations were
+  removed. `host.session_id` is now stripped with
+  `endsWith` + `substring` (not `replace(...)`) to avoid the
+  `_FromAdmin`-inside-a-session-id trap documented above.
+- The `sessions` transform ships with the production shape
+  `!active.contains(session)` matching the flipped 53001 files.
 
 ## Method notes for the next sibling watcher
 
