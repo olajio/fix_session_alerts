@@ -165,7 +165,7 @@
                   List active = ctx.payload.errors.aggregations.session_id.buckets.stream().map(b -> b.key).collect(Collectors.toList());
                   List to_alert = [];
                   for (def session: ctx.payload.groups_hosts._value) {
-                    if (active.contains(session)) {
+                    if (!active.contains(session)) {
                       to_alert.add(session);
                     }
                   }
