@@ -141,7 +141,7 @@
                             "size": 5000
                           },
                           "aggs": {
-                            "details": {
+                            "data": {
                               "top_hits": {
                                 "size": 1,
                                 "_source": {
@@ -311,7 +311,7 @@
           host.cloud_account_name = session_to_account.getOrDefault(session, '');
           def bucket = session_details.get(session);
           if (bucket != null) {
-            def source = bucket.details.hits.hits.0._source;
+            def source = bucket.data.hits.hits.0._source;
             host.cloud_region = source.cloud.region;
           } else {
             host.cloud_region = '';

@@ -61,7 +61,7 @@ without splitting the watcher per account. Two hunks per file:
    host.cloud_account_name = session_to_account.getOrDefault(session, '');
    def bucket = session_details.get(session);
    if (bucket != null) {
-     def source = bucket.details.hits.hits.0._source;  // 53002 uses bucket.data instead
+     def source = bucket.data.hits.hits.0._source;
      host.cloud_region = source.cloud.region;
    } else {
      host.cloud_region = '';
@@ -114,10 +114,12 @@ structurally validated: `headers` sits as a sibling of `params` under
   sub-agg on the schedule aggregation, and the two-map enrichment in the
   top-level transform. `priority_by_account` and the webhook body
   references are already in place if you seed from an updated file.
-- **Watch for the top_hits agg name on the errors side.** 53001 calls it
-  `details`; 53002 calls it `data`. The path in the transform
-  (`bucket.details…` vs `bucket.data…`) must match. The schedule sub-agg
-  added by this change is named `account` in both watchers.
+- **Two named top_hits sub-aggs to keep straight.** The errors-side one
+  under `session_id` is `data` in both watchers (53001's earlier `details`
+  name has been renamed for consistency), dereferenced as
+  `bucket.data.hits.hits.0._source`. The schedule-side one added by this
+  change is `account`, dereferenced as
+  `bucket.account.hits.hits.0._source`.
 - **Watch for a `_FromAdmin`-style suffix.** If the `sessions` transform
   appends one (53002 does), the schedule map is keyed by the raw
   `fix_sessionid` — look it up with the *cleaned* `host.session_id`, and
