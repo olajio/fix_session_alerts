@@ -39,6 +39,18 @@
                       "terms": {
                         "field": "target.keyword",
                         "size": 5000
+                      },
+                      "aggs": {
+                        "account": {
+                          "top_hits": {
+                            "size": 1,
+                            "_source": {
+                              "include": [
+                                "cloud.account.name"
+                              ]
+                            }
+                          }
+                        }
                       }
                     }
                   }
@@ -275,29 +287,33 @@
   "transform": {
     "script": {
       "source": """
-        // store two lists of host buckets
-        List to_open = [];
+        // session -> cloud.account.name from fix_session_schedule (available even when the log is missing)
+        Map session_to_account = new HashMap();
+        for (def bucket: ctx.payload.groups.aggregations.hosts.buckets) {
+          def source = bucket.account.hits.hits.0._source;
+          session_to_account.put(bucket.key, source.cloud.account.name);
+        }
 
-        // build a session_id -> bucket lookup so we can pull cloud.account.name / cloud.region per session
+        // session -> errors bucket (present only when the log is present); used for cloud.region
         Map session_details = new HashMap();
         for (def bucket: ctx.payload.errors.aggregations.session_id.buckets) {
           session_details.put(bucket.key, bucket);
         }
 
+        List to_open = [];
         for (def session: ctx.payload.sessions._value) {
           Map host = new HashMap();
           host.key = session;
           host.dashboard_link = ctx.metadata.dashboard_link.replace('SESSION_REPLACEMENT', host.key);
 
+          // account always comes from the schedule map (fix_session_schedule doesn't carry cloud.region,
+          // so region is enriched from the log bucket when present, otherwise blank)
+          host.cloud_account_name = session_to_account.getOrDefault(session, '');
           def bucket = session_details.get(session);
           if (bucket != null) {
             def source = bucket.details.hits.hits.0._source;
-            host.cloud_account_name = source.cloud.account.name;
             host.cloud_region = source.cloud.region;
           } else {
-            // shouldn't happen (sessions._value is derived from these buckets), but keep the
-            // watcher alive if it ever does; the ticket will just show blank cloud fields
-            host.cloud_account_name = '';
             host.cloud_region = '';
           }
 
@@ -313,7 +329,6 @@
           to_open.add(host);
         }
 
-        // replace payload with our two lists
         return [
           'to_open': to_open
         ];
