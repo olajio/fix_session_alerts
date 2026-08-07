@@ -44,11 +44,28 @@ without splitting the watcher per account. Two hunks per file:
    ```
 2. **Top-level `transform.script.source`** — two-map enrichment:
    ```painless
-   // session -> cloud.account.name from fix_session_schedule (always populated)
+   // session -> cloud.account.name from fix_session_schedule (available even when the log is missing).
+   // Defensive: skip hosts whose schedule doc has no account populated, and handle both a
+   // nested {"cloud": {"account": {"name": "..."}}} shape and a flat {"cloud.account.name": "..."} shape.
    Map session_to_account = new HashMap();
    for (def bucket: ctx.payload.groups.aggregations.hosts.buckets) {
+     if (bucket.account == null || bucket.account.hits == null
+         || bucket.account.hits.hits == null || bucket.account.hits.hits.length == 0) {
+       continue;
+     }
      def source = bucket.account.hits.hits.0._source;
-     session_to_account.put(bucket.key, source.cloud.account.name);
+     if (source == null) {
+       continue;
+     }
+     def acct = null;
+     if (source instanceof Map && source.containsKey('cloud.account.name')) {
+       acct = source.get('cloud.account.name');
+     } else if (source.cloud != null && source.cloud.account != null) {
+       acct = source.cloud.account.name;
+     }
+     if (acct != null) {
+       session_to_account.put(bucket.key, acct);
+     }
    }
 
    // session -> errors bucket (present only when the log is present); used for cloud.region
@@ -102,11 +119,15 @@ Also present from the earlier round (unchanged this pass):
 ## Not touched (intentional)
 
 `ticket_group` (`"Monitoring and Analytics - Testing"`), the
-`"TEST PLEASE IGNORE - "` subject prefix, cron, index paths, webhook
-`headers`, and the `sessions` transform's `active.contains(session)` /
-`!active.contains(session)` line — all left as-is. Both files
-structurally validated: `headers` sits as a sibling of `params` under
-`webhook`, JSON parses cleanly.
+`"TEST PLEASE IGNORE - "` subject prefix, cron, index paths, and webhook
+`headers` — all left as-is. Both files structurally validated: `headers`
+sits as a sibling of `params` under `webhook`, JSON parses cleanly.
+
+The `sessions` transform in all four watcher files
+(`sdpmt_53001_{debug,updated}.json`,
+`sdpmt_53002_from_admin_{debug,updated}.json`) now uses
+`!active.contains(session)` — the production shape, which fires the
+alert when the expected log is *missing*.
 
 ## Method notes for the next sibling watcher
 
@@ -129,6 +150,15 @@ structurally validated: `headers` sits as a sibling of `params` under
   missing-log alerts the errors bucket will not exist for the session,
   so region falls back to blank; the schedule-side account is always
   populated separately.
+- **Defensive schedule-side lookup.** A schedule doc that hasn't been
+  backfilled with `cloud.account.name`, or a mapping that stores the
+  field as the flat dotted key `"cloud.account.name"` rather than as a
+  nested `cloud.account.name` object, will make `source.cloud.account.name`
+  throw `null_pointer_exception: cannot access method/field [account]
+  from a null def reference`. The account-lookup snippet above handles
+  both shapes and skips hosts where neither is present, leaving that
+  ticket's account blank (priority falls back to
+  `metadata.ticket_priority`) instead of failing the whole transform.
 - **Structural gotcha.** In the webhook block, `headers` is a sibling of
   `params`, not a child. Nesting it inside `params` produces
   `[script] unknown field [Content-Type]` at parse time.

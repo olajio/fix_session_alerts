@@ -177,7 +177,7 @@
                   List active = ctx.payload.errors.aggregations.session_id.buckets.stream().map(b -> b.key).collect(Collectors.toList());
                   List to_alert = [];
                   for (def session: ctx.payload.groups_hosts._value) {
-                    if (active.contains(session)) {
+                    if (!active.contains(session)) {
                       to_alert.add(session);
                     }
                   }
@@ -287,11 +287,28 @@
   "transform": {
     "script": {
       "source": """
-        // session -> cloud.account.name from fix_session_schedule (available even when the log is missing)
+        // session -> cloud.account.name from fix_session_schedule (available even when the log is missing).
+        // Defensive: skip hosts whose schedule doc has no account populated, and handle both a
+        // nested {"cloud": {"account": {"name": "..."}}} shape and a flat {"cloud.account.name": "..."} shape.
         Map session_to_account = new HashMap();
         for (def bucket: ctx.payload.groups.aggregations.hosts.buckets) {
+          if (bucket.account == null || bucket.account.hits == null
+              || bucket.account.hits.hits == null || bucket.account.hits.hits.length == 0) {
+            continue;
+          }
           def source = bucket.account.hits.hits.0._source;
-          session_to_account.put(bucket.key, source.cloud.account.name);
+          if (source == null) {
+            continue;
+          }
+          def acct = null;
+          if (source instanceof Map && source.containsKey('cloud.account.name')) {
+            acct = source.get('cloud.account.name');
+          } else if (source.cloud != null && source.cloud.account != null) {
+            acct = source.cloud.account.name;
+          }
+          if (acct != null) {
+            session_to_account.put(bucket.key, acct);
+          }
         }
 
         // session -> errors bucket (present only when the log is present); used for cloud.region
