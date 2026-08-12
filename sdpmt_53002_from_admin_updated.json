@@ -430,6 +430,9 @@
           session_details.put(bucket.key, bucket);
         }
 
+        // hoisted: read the priority map once (avoids repeatedly re-reading metadata inside the loop)
+        def priority_map = ctx.metadata.priority_by_account;
+
         // store two lists of host buckets
         List to_open = [];
         List to_comment = [];
@@ -447,8 +450,15 @@
           host.dashboard_link = ctx.metadata.dashboard_link.replace('SESSION_REPLACEMENT', host.session_id);
 
           // account always comes from the schedule map (fix_session_schedule doesn't carry cloud.region,
-          // so region is enriched from the log bucket when present, otherwise blank)
-          host.cloud_account_name = session_to_account.getOrDefault(host.session_id, '');
+          // so region is enriched from the log bucket when present, otherwise blank).
+          // Use explicit get + null-check (getOrDefault sometimes hits a Painless whitelist quirk).
+          def looked_up_acct = session_to_account.get(host.session_id);
+          if (looked_up_acct != null) {
+            host.cloud_account_name = looked_up_acct;
+          } else {
+            host.cloud_account_name = '';
+          }
+
           def bucket = session_details.get(host.session_id);
           if (bucket != null) {
             def source = bucket.data.hits.hits.0._source;
@@ -459,9 +469,12 @@
 
           // priority driven by the cloud account via ctx.metadata.priority_by_account;
           // falls back to ctx.metadata.ticket_priority if the account isn't mapped
-          Map priority_map = ctx.metadata.priority_by_account;
-          if (priority_map != null && priority_map.containsKey(host.cloud_account_name)) {
-            host.ticket_priority = priority_map.get(host.cloud_account_name);
+          def mapped_priority = null;
+          if (priority_map != null) {
+            mapped_priority = priority_map.get(host.cloud_account_name);
+          }
+          if (mapped_priority != null) {
+            host.ticket_priority = mapped_priority;
           } else {
             host.ticket_priority = ctx.metadata.ticket_priority;
           }
