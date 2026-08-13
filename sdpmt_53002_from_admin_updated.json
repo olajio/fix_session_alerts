@@ -81,7 +81,7 @@
                       "aggs": {
                         "account": {
                           "top_hits": {
-                            "size": 1,
+                            "size": 20,
                             "_source": {
                               "include": [
                                 "cloud.account.name"
@@ -403,24 +403,35 @@
         // Keyed by the raw fix_sessionid (target.keyword in the schedule), before the _FromAdmin suffix is added.
         // Defensive: skip hosts whose schedule doc has no account populated, and handle both a
         // nested {"cloud": {"account": {"name": "..."}}} shape and a flat {"cloud.account.name": "..."} shape.
+        // A target can match more than one schedule doc, so scan every returned hit instead of
+        // trusting hit 0 (whose order is arbitrary). If a target spans environments, escalate to prd.
         Map session_to_account = new HashMap();
         for (def bucket: ctx.payload.groups.aggregations.hosts.buckets) {
           if (bucket.account == null || bucket.account.hits == null
-              || bucket.account.hits.hits == null || bucket.account.hits.hits.length == 0) {
+              || bucket.account.hits.hits == null) {
             continue;
           }
-          def source = bucket.account.hits.hits.0._source;
-          if (source == null) {
-            continue;
+          def chosen = null;
+          for (def hit: bucket.account.hits.hits) {
+            def source = hit._source;
+            if (source == null) {
+              continue;
+            }
+            def acct = null;
+            if (source instanceof Map && source.containsKey('cloud.account.name')) {
+              acct = source.get('cloud.account.name');
+            } else if (source.cloud != null && source.cloud.account != null) {
+              acct = source.cloud.account.name;
+            }
+            if (acct == null) {
+              continue;
+            }
+            if (chosen == null || acct == 'hedgeserv-app-prd') {
+              chosen = acct;
+            }
           }
-          def acct = null;
-          if (source instanceof Map && source.containsKey('cloud.account.name')) {
-            acct = source.get('cloud.account.name');
-          } else if (source.cloud != null && source.cloud.account != null) {
-            acct = source.cloud.account.name;
-          }
-          if (acct != null) {
-            session_to_account.put(bucket.key, acct);
+          if (chosen != null) {
+            session_to_account.put(bucket.key, chosen);
           }
         }
 
