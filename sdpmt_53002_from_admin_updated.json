@@ -211,7 +211,7 @@
                   List to_alert = [];
                   for (def session: ctx.payload.groups_hosts._value) {
                     if (!active.contains(session)) {
-                      to_alert.add(session + "_FromAdmin");
+                      to_alert.add(session + "_FromAdminOrApp");
                     }
                   }
                   return to_alert;""",
@@ -404,7 +404,7 @@
         Map opened = ctx.payload.open_tickets.hits.hits.stream().collect(Collectors.toMap(h -> h._source.host.target, h -> h._source.ticket_id));
 
         // session -> cloud.account.name from fix_session_schedule (available even when the log is missing).
-        // Keyed by the raw fix_sessionid (target.keyword in the schedule), before the _FromAdmin suffix is added.
+        // Keyed by the raw fix_sessionid (target.keyword in the schedule), before the _FromAdminOrApp suffix is added.
         // Defensive: skip hosts whose schedule doc has no account populated, and handle both a
         // nested {"cloud": {"account": {"name": "..."}}} shape and a flat {"cloud.account.name": "..."} shape.
         // A target can match more than one schedule doc, so scan every returned hit instead of
@@ -451,12 +451,12 @@
         // store two lists of host buckets
         List to_open = [];
         List to_comment = [];
-        String suffix = '_FromAdmin';
+        String suffix = '_FromAdminOrApp';
         for (def session: ctx.payload.sessions._value) {
           Map host = new HashMap();
           host.key = session;
           // strip only the trailing suffix (replace-all would also drop the marker
-          // when a fix_sessionid value contains "_FromAdmin" internally)
+          // when a fix_sessionid value contains "_FromAdminOrApp" internally)
           if (session.endsWith(suffix)) {
             host.session_id = session.substring(0, session.length() - suffix.length());
           } else {
