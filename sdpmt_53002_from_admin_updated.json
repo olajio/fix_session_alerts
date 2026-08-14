@@ -156,8 +156,8 @@
                               }
                             },
                             {
-                              "terms": {
-                                "labels.fix_event_handler_type": {{#toJson}}ctx.metadata.check_types{{/toJson}}
+                              "term": {
+                                "labels.fix_event_handler_type": "{{ ctx.metadata.check_type }}"
                               }
                             },
                             {
@@ -189,12 +189,6 @@
                                   ]
                                 }
                               }
-                            },
-                            "check_types": {
-                              "terms": {
-                                "field": "labels.fix_event_handler_type",
-                                "size": 10
-                              }
                             }
                           }
                         }
@@ -212,27 +206,12 @@
             "transform": {
               "script": {
                 "source": """
-                  // session -> set of check types that DID report a heartbeat in the window
-                  Map active = new HashMap();
-                  for (def b: ctx.payload.errors.aggregations.session_id.buckets) {
-                    Set seen = new HashSet();
-                    if (b.check_types != null && b.check_types.buckets != null) {
-                      for (def t: b.check_types.buckets) {
-                        seen.add(t.key);
-                      }
-                    }
-                    active.put(b.key, seen);
-                  }
-
-                  // alert per (session, check type): each check type is tracked independently, so a
-                  // session missing both FromAdmin and FromApp yields two entries
+                  // flatten the list of hostnames to use in the open_tickets input
+                  List active = ctx.payload.errors.aggregations.session_id.buckets.stream().map(b -> b.key).collect(Collectors.toList());
                   List to_alert = [];
                   for (def session: ctx.payload.groups_hosts._value) {
-                    def seen = active.get(session);
-                    for (def ct: ctx.metadata.check_types) {
-                      if (seen == null || !seen.contains(ct)) {
-                        to_alert.add(session + "_" + ct);
-                      }
+                    if (!active.contains(session)) {
+                      to_alert.add(session + "_FromAdmin");
                     }
                   }
                   return to_alert;""",
@@ -268,8 +247,8 @@
                               }
                             },
                             {
-                              "terms": {
-                                "event_type": {{#toJson}}ctx.metadata.ticket_event_types{{/toJson}}
+                              "term": {
+                                "event_type": "{{ ctx.metadata.ticket_event_type }}"
                               }
                             }
                           ]
@@ -347,7 +326,7 @@
           "input_data": """{
             "request": {
               "subject": "TEST PLEASE IGNORE - {{ ctx.metadata.amdb_name }} Alert - {{ ctx.payload.session_id }} - {{ ctx.payload.cloud_account_name }}",
-              "description": "<h3>{{ ctx.metadata.amdb_name }}</h3> <p>Cloud Account: {{ ctx.payload.cloud_account_name }}</p> <p>Check Type: {{ ctx.payload.check_type }}</p> <p>Session ID: {{ ctx.payload.session_id }}</p> <p><a href='{{ctx.metadata.amdb_link}}'>AMDB</a></p> <p>To open the dashboard, please copy the link below</p> <p><font color=blue>{{ ctx.payload.dashboard_link }}</font></p>",
+              "description": "<h3>{{ ctx.metadata.amdb_name }}</h3> <p>Cloud Account: {{ ctx.payload.cloud_account_name }}</p> <p>Check Type: {{ ctx.metadata.check_type }}</p> <p>Session ID: {{ ctx.payload.session_id }}</p> <p><a href='{{ctx.metadata.amdb_link}}'>AMDB</a></p> <p>To open the dashboard, please copy the link below</p> <p><font color=blue>{{ ctx.payload.dashboard_link }}</font></p>",
               "requester": {
                 "name": "service-elastic"
               },
@@ -372,7 +351,7 @@
               "udf_fields": {
                 "udf_sline_49837": "{{ ctx.trigger.triggered_time }}",
                 "udf_sline_53701": "",
-                "udf_sline_49808": "{{ ctx.payload.ticket_event_type }}",
+                "udf_sline_49808": "{{ ctx.metadata.ticket_event_type }}",
                 "udf_sline_49805": "{{ ctx.payload.key }}",
                 "udf_sline_53703": "{{ ctx.metadata.service_name }}",
                 "udf_sline_55201": "",
@@ -399,18 +378,7 @@
     "ticket_priority": "1 - Critical",
     "amdb_link": "https://hedgeservcorp.sharepoint.com/sites/GlobalTechnology/AMDB/SitePages/53002.aspx",
     "threshold": 5,
-    "check_types": [
-      "FromAdmin",
-      "FromApp"
-    ],
-    "ticket_event_types": [
-      "53002_from_admin",
-      "53002_from_app"
-    ],
-    "event_type_by_check_type": {
-      "FromAdmin": "53002_from_admin",
-      "FromApp": "53002_from_app"
-    },
+    "check_type": "FromAdmin",
     "data_content": "data_content",
     "timeRangeUnit": "d",
     "event_type": "53002",
@@ -479,39 +447,17 @@
         // store two lists of host buckets
         List to_open = [];
         List to_comment = [];
+        String suffix = '_FromAdmin';
         for (def session: ctx.payload.sessions._value) {
           Map host = new HashMap();
           host.key = session;
-
-          // the sessions transform appended "_<CheckType>"; find which one and strip just that
-          // trailing suffix (replace-all would also drop the marker if it appeared mid-session-id)
-          def check_type = null;
-          for (def ct: ctx.metadata.check_types) {
-            if (session.endsWith('_' + ct)) {
-              check_type = ct;
-              break;
-            }
-          }
-          if (check_type != null) {
-            host.session_id = session.substring(0, session.length() - check_type.length() - 1);
-            host.check_type = check_type;
+          // strip only the trailing suffix (replace-all would also drop the marker
+          // when a fix_sessionid value contains "_FromAdmin" internally)
+          if (session.endsWith(suffix)) {
+            host.session_id = session.substring(0, session.length() - suffix.length());
           } else {
             host.session_id = session;
-            host.check_type = '';
           }
-
-          // stamp the ticket event type that corresponds to this host's check type
-          def et = null;
-          def et_map = ctx.metadata.event_type_by_check_type;
-          if (et_map != null && check_type != null) {
-            et = et_map.get(check_type);
-          }
-          if (et != null) {
-            host.ticket_event_type = et;
-          } else {
-            host.ticket_event_type = ctx.metadata.ticket_event_type;
-          }
-
           host.dashboard_link = ctx.metadata.dashboard_link.replace('SESSION_REPLACEMENT', host.session_id);
 
           // account always comes from the schedule map (fix_session_schedule doesn't carry cloud.region,
