@@ -156,8 +156,8 @@
                               }
                             },
                             {
-                              "term": {
-                                "labels.fix_event_handler_type": "{{ ctx.metadata.check_type }}"
+                              "terms": {
+                                "labels.fix_event_handler_type": {{#toJson}}ctx.metadata.check_types{{/toJson}}
                               }
                             },
                             {
@@ -326,7 +326,7 @@
           "input_data": """{
             "request": {
               "subject": "TEST PLEASE IGNORE - {{ ctx.metadata.amdb_name }} Alert - {{ ctx.payload.session_id }} - {{ ctx.payload.cloud_account_name }}",
-              "description": "<h3>{{ ctx.metadata.amdb_name }}</h3> <p>Cloud Account: {{ ctx.payload.cloud_account_name }}</p> <p>Check Type: {{ ctx.metadata.check_type }}</p> <p>Session ID: {{ ctx.payload.session_id }}</p> <p><a href='{{ctx.metadata.amdb_link}}'>AMDB</a></p> <p>To open the dashboard, please copy the link below</p> <p><font color=blue>{{ ctx.payload.dashboard_link }}</font></p>",
+              "description": "<h3>{{ ctx.metadata.amdb_name }}</h3> <p>Cloud Account: {{ ctx.payload.cloud_account_name }}</p> <p>Check Type: {{ ctx.metadata.check_type_label }}</p> <p>Session ID: {{ ctx.payload.session_id }}</p> <p><a href='{{ctx.metadata.amdb_link}}'>AMDB</a></p> <p>To open the dashboard, please copy the link below</p> <p><font color=blue>{{ ctx.payload.dashboard_link }}</font></p>",
               "requester": {
                 "name": "service-elastic"
               },
@@ -374,11 +374,15 @@
   "metadata": {
     "service_name": "FIX Heartbeat Check",
     "amdb_name": "53002 - FIX Heartbeat Check",
-    "ticket_event_type": "53002_from_admin",
+    "ticket_event_type": "53002_from_admin_or_app",
     "ticket_priority": "1 - Critical",
     "amdb_link": "https://hedgeservcorp.sharepoint.com/sites/GlobalTechnology/AMDB/SitePages/53002.aspx",
     "threshold": 5,
-    "check_type": "FromAdmin",
+    "check_types": [
+      "FromAdmin",
+      "FromApp"
+    ],
+    "check_type_label": "FromAdmin and FromApp",
     "data_content": "data_content",
     "timeRangeUnit": "d",
     "event_type": "53002",
