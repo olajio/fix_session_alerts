@@ -165,6 +165,146 @@ alert when the expected log is *missing*.
 
 ---
 
+## Day-of-week schedules (`days`) — `FIX.4.4:HSDIAMETER44->NYFIX44`
+
+### Request
+
+| FIX Session ID | Expected Logon (ET) | Connection Window (ET) | cloud.account.name |
+| --- | --- | --- | --- |
+| `FIX.4.4:HSDIAMETER44->NYFIX44` | 17:47 | 17:45 to 17:40 (Su, Mo, Tu, We, Th) | `hedgeserv-app-prd` |
+
+Unlike every other target in `fix_session_schedule`, this one is restricted to
+specific days. Two things make it different from the existing docs:
+
+1. **The window wraps.** 17:47 -> 17:40 is a ~23h53m window: the session logs on
+   one evening and stays connected until late the following afternoon.
+2. **`days` are logon days, not up days.** The Thursday 17:47 window is the last
+   of the week and does not close until Friday 17:40, so the session is
+   legitimately down from Friday 17:40 until Sunday 17:47. Testing "is *today*
+   in `days`?" would wrongly stop alerting all Friday morning while the Thursday
+   window is still open, and would wrongly start alerting on Friday evening.
+
+### Document
+
+`fix_session_schedule/FIX.4.4_HSDIAMETER44-NYFIX44.console`:
+
+```json
+PUT fix_session_schedule/_doc/FIX.4.4:HSDIAMETER44->NYFIX44
+{
+  "alert_status": "enabled",
+  "cloud.account.name": "hedgeserv-app-prd",
+  "end_alert_time": "17:40:00-05:00",
+  "start_hour": 17,
+  "start_minute": 47,
+  "start_alert_time": "17:47:00-05:00",
+  "end_hour": 17,
+  "end_minute": 40,
+  "days": ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY"],
+  "target": "FIX.4.4:HSDIAMETER44->NYFIX44",
+  "group": ["53001", "53002"]
+}
+```
+
+Field conventions carried over from `FIX.4.4:PRODHSSYCAMORE->TRUMID`:
+
+- `start_hour`/`start_minute` track the **expected logon time**, not the window
+  open (PRODHSSYCAMORE opens at 05:00 but carries 5:02). `end_hour`/`end_minute`
+  track the **window close**.
+- `start_alert_time`/`end_alert_time` are the same clock times as time-only
+  dates with the `-05:00` offset, matching the existing docs (they render as
+  `Jan 1, 1970 @ HH:MM:00.000` in Discover). No watcher reads them today.
+- `cloud.account.name` stays the flat dotted key, as in the other docs.
+- `days` values are `java.time.DayOfWeek` names (uppercase), so the script can
+  compare them without a lookup table.
+
+### Watcher change (`sdpmt_53002_from_admin_{updated,debug}.json`)
+
+**`days` on its own does nothing** — the window script in the `groups` input had
+no day awareness, so the doc would have matched on Friday evening and Saturday
+too. The script now:
+
+```painless
+boolean inWindow;
+boolean openedToday;
+
+if (startTotal <= endTotal) {
+  inWindow = currentTotal >= startTotal && currentTotal < endTotal;
+  openedToday = true;
+} else {
+  inWindow = currentTotal >= startTotal || currentTotal < endTotal;
+  openedToday = currentTotal >= startTotal;
+}
+
+if (!inWindow) { return false; }
+
+if (!doc.containsKey('days.keyword') || doc['days.keyword'].size() == 0) {
+  return true;
+}
+
+String windowDay = openedToday
+  ? nyTime.getDayOfWeek().toString()
+  : nyTime.minusDays(1).getDayOfWeek().toString();
+
+for (def day: doc['days.keyword']) {
+  if (day.equals(windowDay)) { return true; }
+}
+return false;
+```
+
+- **Backward compatible.** A doc with no `days` short-circuits to `true`, so the
+  six existing targets match on exactly the same minutes as before (verified
+  minute-by-minute across a full week: zero differing minutes).
+- **`days.keyword`, not `days`.** `days` lands as a dynamically mapped
+  text field with a `.keyword` sub-field, same as `target`/`target.keyword`. The
+  `containsKey` guard keeps the script from throwing on clusters where no doc
+  carries `days` yet, so it is safe to deploy before the doc is indexed.
+- **`openedToday`** is what makes the day test correct on a wrapping window:
+  when we are in the tail of a window that opened yesterday, the day compared is
+  yesterday's.
+
+Resulting coverage, simulated over a week: continuous from Sun 17:47 to Fri
+17:40, with the 7-minute 17:40-17:47 maintenance gap each day, and nothing
+expected between Fri 17:40 and Sun 17:47.
+
+### Open item: the 53002 cron does not fire on Sunday evenings
+
+Not changed here, because it affects every session in group 53002.
+
+The trigger is:
+
+```json
+"cron": ["0 */2 * ? * TUE-FRI", "0 */5 0-3 ? * SAT", "0 */5 4-23 ? * MON"]
+```
+
+Watcher cron is evaluated in **UTC**. Sunday UTC has no entry, and the MON entry
+starts at 04:00 UTC, so the watcher does not run between **Sun 17:47 ET and Sun
+23:00 ET (EST) / Mon 00:00 ET (EDT)** — a 313-373 minute blind spot landing
+exactly on this session's weekly logon. A Sunday-evening logon failure would not
+open a ticket until several hours later.
+
+Closing it requires:
+
+```json
+"cron": ["0 */2 * ? * TUE-FRI", "0 */5 0-3 ? * SAT", "0 */5 * ? * MON", "0 */5 21-23 ? * SUN"]
+```
+
+(verified: zero uncovered in-window minutes in both EDT and EST). The reason it
+is not applied: the added Sunday-evening runs would also evaluate the other
+group-53002 docs, and `FIX.4.2:DMCP_EMSX_PROD->BLP_EMSX_PROD`
+(00:02-23:55, no `days`) would begin alerting in a window it is not checked in
+today. Give those docs a `days` list first, or accept the new tickets.
+
+### 53001 is unaffected
+
+`sdpmt_53001_updated.json` has no window script at all — it selects every
+enabled doc in the group and checks for an `OnLogon` success within
+`now-27d`. A 27-day lookback comfortably covers a session that logs on five days
+a week, so leaving `FIX.4.4:HSDIAMETER44->NYFIX44` in `group: ["53001","53002"]`
+(matching what was done for PRODHSSYCAMORE) does not introduce false positives
+there, and 53001 needs no day handling.
+
+---
+
 ## History (superseded approaches)
 
 For posterity — the path here wasn't straight.

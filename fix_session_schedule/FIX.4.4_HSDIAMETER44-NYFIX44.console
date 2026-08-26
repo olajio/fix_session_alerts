@@ -1,0 +1,40 @@
+# 53002 - FIX Heartbeat Check / 53001 - FIX Initial Logon Failure
+#
+# FIX.4.4:HSDIAMETER44->NYFIX44
+#   Expected logon time (ET):  17:47
+#   Connection window (ET):    17:45 to 17:40  (Su, Mo, Tu, We, Th)
+#   cloud.account.name:        hedgeserv-app-prd
+#
+# start_hour/start_minute follow the *expected logon time* (as with
+# FIX.4.4:PRODHSSYCAMORE->TRUMID, where the window opens 05:00 but the doc
+# carries 5:02). end_hour/end_minute are the close of the connection window.
+#
+# 17:47 -> 17:40 is a wrap-around window: the session logs on one evening and
+# stays up until late afternoon the next day. "days" therefore lists the days
+# the session LOGS ON, not every day it is expected to be up: the Thursday
+# 17:47 window is the last of the week and closes Friday 17:40, leaving the
+# session legitimately down from Friday 17:40 until Sunday 17:47.
+
+PUT fix_session_schedule/_doc/FIX.4.4:HSDIAMETER44->NYFIX44
+{
+  "alert_status": "enabled",
+  "cloud.account.name": "hedgeserv-app-prd",
+  "end_alert_time": "17:40:00-05:00",
+  "start_hour": 17,
+  "start_minute": 47,
+  "start_alert_time": "17:47:00-05:00",
+  "end_hour": 17,
+  "end_minute": 40,
+  "days": [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY"
+  ],
+  "target": "FIX.4.4:HSDIAMETER44->NYFIX44",
+  "group": [
+    "53001",
+    "53002"
+  ]
+}

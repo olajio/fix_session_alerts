@@ -60,11 +60,43 @@
                                 int startTotal = startH * 60 + startM;
                                 int endTotal = endH * 60 + endM;
 
+                                boolean inWindow;
+                                boolean openedToday;
+
                                 if (startTotal <= endTotal) {
-                                  return currentTotal >= startTotal && currentTotal < endTotal;
+                                  inWindow = currentTotal >= startTotal && currentTotal < endTotal;
+                                  openedToday = true;
                                 } else {
-                                  return currentTotal >= startTotal || currentTotal < endTotal;
+                                  // Wrap-around window: it opened today if we are past the start time,
+                                  // otherwise it opened yesterday and is still running.
+                                  inWindow = currentTotal >= startTotal || currentTotal < endTotal;
+                                  openedToday = currentTotal >= startTotal;
                                 }
+
+                                if (!inWindow) {
+                                  return false;
+                                }
+
+                                // No 'days' on the schedule doc -> the window applies every day.
+                                // Keeps every pre-existing doc matching exactly as before.
+                                if (!doc.containsKey('days.keyword') || doc['days.keyword'].size() == 0) {
+                                  return true;
+                                }
+
+                                // 'days' lists the days the session is expected to LOG ON, so the day to
+                                // test is the day the current window opened, not necessarily today. A
+                                // Thursday 17:47 -> Friday 17:40 window is a Thursday window all the way
+                                // through Friday morning.
+                                String windowDay = openedToday
+                                  ? nyTime.getDayOfWeek().toString()
+                                  : nyTime.minusDays(1).getDayOfWeek().toString();
+
+                                for (def day: doc['days.keyword']) {
+                                  if (day.equals(windowDay)) {
+                                    return true;
+                                  }
+                                }
+                                return false;
                               """
                             }
                           }
