@@ -254,10 +254,27 @@ return false;
 - **Backward compatible.** A doc with no `days` short-circuits to `true`, so the
   six existing targets match on exactly the same minutes as before (verified
   minute-by-minute across a full week: zero differing minutes).
-- **`days.keyword`, not `days`.** `days` lands as a dynamically mapped
-  text field with a `.keyword` sub-field, same as `target`/`target.keyword`. The
-  `containsKey` guard keeps the script from throwing on clusters where no doc
-  carries `days` yet, so it is safe to deploy before the doc is indexed.
+- **Both `days.keyword` and `days` are tried, in that order.** This is the part
+  that is easy to get wrong. `doc.containsKey()` answers from the **index
+  mapping**, not from the document, so it cannot be used to ask "does *this* doc
+  have days?" — once one doc carries the field, `containsKey` is true for every
+  doc in the index. Two separate conditions are doing two different jobs:
+
+  | condition | means | outcome |
+  | --- | --- | --- |
+  | neither name in the mapping | no schedule doc uses `days` yet | no restriction (watcher safe to deploy first) |
+  | mapped, but `size() == 0` | **this** doc has no `days` (PRODHSSYCAMORE) | no restriction — every day |
+  | mapped, `size() > 0` | this doc has `days` (HSDIAMETER44) | day filter applies |
+
+  Checking only `days.keyword` was a real bug in the first cut of this change:
+  under dynamic mapping `days` becomes `text` + `days.keyword`, but under an
+  explicit or dynamic-template mapping it becomes a bare `keyword` named `days`,
+  `containsKey('days.keyword')` returns false, and the script falls through to
+  "no restriction" — **silently** alerting HSDIAMETER44 on Friday evening and
+  Saturday. Trying both names removes that failure mode. The one shape left that
+  cannot work is `days` mapped as `text` with no sub-field, where `doc['days']`
+  throws on disabled fielddata; that fails loudly rather than silently, and
+  pinning the mapping (step 2 of the console file) prevents it.
 - **`openedToday`** is what makes the day test correct on a wrapping window:
   when we are in the tail of a window that opened yesterday, the day compared is
   yesterday's.
@@ -265,6 +282,18 @@ return false;
 Resulting coverage, simulated over a week: continuous from Sun 17:47 to Fri
 17:40, with the 7-minute 17:40-17:47 maintenance gap each day, and nothing
 expected between Fri 17:40 and Sun 17:47.
+
+### Verifying it on the cluster
+
+The simulations behind the claims above are models of the logic and of
+`LeafDocLookup` semantics, not a live Elasticsearch. Step 4 of
+`fix_session_schedule/FIX.4.4_HSDIAMETER44-NYFIX44.console` is the real check:
+it runs the watcher's window script as a plain `_search` with a
+`params.test_millis` override, so any point in the week can be tested without
+waiting for Friday. The discriminating case is **Fri 18:00 ET**, where
+`FIX.4.4:HSDIAMETER44->NYFIX44` must be absent while
+`FIX.4.4:PRODHSSYCAMORE->TRUMID` is still present. If both come back, the day
+filter is not taking effect and the `days` mapping is the thing to check.
 
 ### Open item: the 53002 cron does not fire on Sunday evenings
 

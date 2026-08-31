@@ -77,9 +77,25 @@
                                   return false;
                                 }
 
-                                // No 'days' on the schedule doc -> the window applies every day.
-                                // Keeps every pre-existing doc matching exactly as before.
-                                if (!doc.containsKey('days.keyword') || doc['days.keyword'].size() == 0) {
+                                // Resolve 'days' whichever way it mapped. doc.containsKey() answers
+                                // from the INDEX MAPPING, not from this document, so both names are
+                                // tried: dynamic mapping gives text + 'days.keyword', while an explicit
+                                // or dynamic-template mapping gives a bare keyword 'days'. Checking only
+                                // one name would make the other shape fall through to "no restriction"
+                                // and silently alert on days the session is expected to be down.
+                                def days = null;
+                                if (doc.containsKey('days.keyword')) {
+                                  days = doc['days.keyword'];
+                                } else if (doc.containsKey('days')) {
+                                  days = doc['days'];
+                                }
+
+                                // days == null  -> 'days' is not in the mapping at all: no schedule doc
+                                //                  uses it yet, so the watcher is safe to deploy first.
+                                // days.size()==0 -> mapped, but THIS doc has no value for it
+                                //                  (e.g. FIX.4.4:PRODHSSYCAMORE->TRUMID).
+                                // Either way the window applies every day, exactly as before.
+                                if (days == null || days.size() == 0) {
                                   return true;
                                 }
 
@@ -91,8 +107,8 @@
                                   ? nyTime.getDayOfWeek().toString()
                                   : nyTime.minusDays(1).getDayOfWeek().toString();
 
-                                for (def day: doc['days.keyword']) {
-                                  if (day.equals(windowDay)) {
+                                for (def day: days) {
+                                  if (day.toString().equals(windowDay)) {
                                     return true;
                                   }
                                 }

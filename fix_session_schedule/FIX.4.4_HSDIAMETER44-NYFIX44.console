@@ -5,6 +5,42 @@
 #   Connection window (ET):    17:45 to 17:40  (Su, Mo, Tu, We, Th)
 #   cloud.account.name:        hedgeserv-app-prd
 #
+# Run these in Kibana -> Dev Tools, in order.
+
+
+# ---------------------------------------------------------------------------
+# STEP 1. Check how (or whether) 'days' is mapped.
+# ---------------------------------------------------------------------------
+# The watcher reads this field through Painless `doc[...]`, which resolves
+# against the INDEX MAPPING. The name it has to use depends on how the field
+# mapped, so look before you index.
+
+GET fix_session_schedule/_mapping/field/days
+
+
+# ---------------------------------------------------------------------------
+# STEP 2. Pin 'days' as a keyword BEFORE indexing the document.
+# ---------------------------------------------------------------------------
+# Skip if step 1 already shows a mapping for 'days' -- a field's type cannot be
+# changed in place, and the watcher script handles either shape anyway.
+#
+# This matters because dynamic mapping would otherwise decide the field type
+# for us, and the two possible outcomes need different field names in the
+# script (`days.keyword` vs `days`).
+
+PUT fix_session_schedule/_mapping
+{
+  "properties": {
+    "days": {
+      "type": "keyword"
+    }
+  }
+}
+
+
+# ---------------------------------------------------------------------------
+# STEP 3. Index the schedule document.
+# ---------------------------------------------------------------------------
 # start_hour/start_minute follow the *expected logon time* (as with
 # FIX.4.4:PRODHSSYCAMORE->TRUMID, where the window opens 05:00 but the doc
 # carries 5:02). end_hour/end_minute are the close of the connection window.
@@ -14,6 +50,8 @@
 # the session LOGS ON, not every day it is expected to be up: the Thursday
 # 17:47 window is the last of the week and closes Friday 17:40, leaving the
 # session legitimately down from Friday 17:40 until Sunday 17:47.
+#
+# Values are java.time.DayOfWeek names, so the script compares them directly.
 
 PUT fix_session_schedule/_doc/FIX.4.4:HSDIAMETER44->NYFIX44
 {
@@ -37,4 +75,103 @@ PUT fix_session_schedule/_doc/FIX.4.4:HSDIAMETER44->NYFIX44
     "53001",
     "53002"
   ]
+}
+
+
+# ---------------------------------------------------------------------------
+# STEP 4. Verify -- docs WITH and WITHOUT 'days', at any point in the week.
+# ---------------------------------------------------------------------------
+# This is the watcher's window script with one addition: it honours
+# params.test_millis so you can time-travel instead of waiting until Friday.
+# Whatever comes back is exactly what the watcher would consider "expected up"
+# at that instant.
+#
+# Set test_millis and compare against the expected results below.
+#
+#   test point      test_millis      HSDIAMETER44   PRODHSSYCAMORE (no days)
+#   Wed 12:00 ET    1787760000000    present        present
+#   Fri 12:00 ET    1787932800000    present        present   <- Thu window still open
+#   Fri 18:00 ET    1787954400000    ABSENT         present   <- Fri not a logon day
+#   Sat 12:00 ET    1788019200000    ABSENT         present
+#   Sun 18:00 ET    1788127200000    present        present   <- new week opens
+#
+# HSDIAMETER44 flipping to ABSENT on Friday evening while PRODHSSYCAMORE stays
+# present is the whole point: the days field gates one doc and not the other.
+# If HSDIAMETER44 is present at Fri 18:00 ET, the day filter is NOT taking
+# effect -- re-check step 1.
+
+GET fix_session_schedule/_search
+{
+  "size": 50,
+  "_source": ["target", "days", "start_hour", "start_minute", "end_hour", "end_minute"],
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "group": "53002" } },
+        { "term": { "alert_status": "enabled" } }
+      ],
+      "must": [
+        {
+          "script": {
+            "script": {
+              "params": { "test_millis": 1787954400000 },
+              "source": """
+                long currentMillis = params.containsKey('test_millis')
+                  ? params.test_millis
+                  : new Date().getTime();
+
+                ZonedDateTime nyTime = ZonedDateTime.ofInstant(
+                  Instant.ofEpochMilli(currentMillis),
+                  ZoneId.of('America/New_York')
+                );
+
+                int currentTotal = nyTime.getHour() * 60 + nyTime.getMinute();
+                int startTotal = doc['start_hour'].value.intValue() * 60
+                               + doc['start_minute'].value.intValue();
+                int endTotal   = doc['end_hour'].value.intValue() * 60
+                               + doc['end_minute'].value.intValue();
+
+                boolean inWindow;
+                boolean openedToday;
+
+                if (startTotal <= endTotal) {
+                  inWindow = currentTotal >= startTotal && currentTotal < endTotal;
+                  openedToday = true;
+                } else {
+                  inWindow = currentTotal >= startTotal || currentTotal < endTotal;
+                  openedToday = currentTotal >= startTotal;
+                }
+
+                if (!inWindow) {
+                  return false;
+                }
+
+                def days = null;
+                if (doc.containsKey('days.keyword')) {
+                  days = doc['days.keyword'];
+                } else if (doc.containsKey('days')) {
+                  days = doc['days'];
+                }
+
+                if (days == null || days.size() == 0) {
+                  return true;
+                }
+
+                String windowDay = openedToday
+                  ? nyTime.getDayOfWeek().toString()
+                  : nyTime.minusDays(1).getDayOfWeek().toString();
+
+                for (def day: days) {
+                  if (day.toString().equals(windowDay)) {
+                    return true;
+                  }
+                }
+                return false;
+              """
+            }
+          }
+        }
+      ]
+    }
+  }
 }
