@@ -1,7 +1,7 @@
 {
   "trigger": {
     "schedule": {
-      "cron": "0 */2 * ? * MON-FRI"
+      "cron": "0 */5 * ? * MON-FRI"
     }
   },
   "input": {
@@ -31,6 +31,76 @@
                             "alert_status": "enabled"
                           }
                         }
+                      ],
+                      "must": [
+                        {
+                          "script": {
+                            "script": {
+                              "source": """
+                                long currentMillis = new Date().getTime();
+
+                                ZonedDateTime nyTime = ZonedDateTime.ofInstant(
+                                  Instant.ofEpochMilli(currentMillis),
+                                  ZoneId.of('America/New_York')
+                                );
+
+                                int currentHour = nyTime.getHour();
+                                int currentMinute = nyTime.getMinute();
+
+                                int startH = doc['start_hour'].value.intValue();
+                                int startM = doc['start_minute'].value.intValue();
+
+                                int currentTotal = currentHour * 60 + currentMinute;
+                                int startTotal = startH * 60 + startM;
+                                int currentTotalLookup = currentTotal - {{ ctx.metadata.lookup_interval }};
+
+                                // Unchanged from the original: did the expected logon time fall inside
+                                // the trailing lookup_interval window that ends now?
+                                if (!(startTotal <= currentTotal && startTotal > currentTotalLookup)) {
+                                  return false;
+                                }
+
+                                // Resolve 'days' whichever way it mapped. doc.containsKey() answers
+                                // from the INDEX MAPPING, not from this document, so both names are
+                                // tried: fix_session_schedule maps 'days' as a bare keyword, while
+                                // dynamic default mapping would instead give text + 'days.keyword'.
+                                // Checking only one name would let the other shape fall through to
+                                // "no restriction" and silently alert on days a session is expected
+                                // to be down.
+                                def days = null;
+                                if (doc.containsKey('days.keyword')) {
+                                  days = doc['days.keyword'];
+                                } else if (doc.containsKey('days')) {
+                                  days = doc['days'];
+                                }
+
+                                // days == null   -> 'days' is not in the mapping at all, so no schedule
+                                //                   doc uses it yet and this watcher is safe to deploy
+                                //                   before the field exists.
+                                // days.size()==0 -> mapped, but THIS doc has no value for it
+                                //                   (e.g. FIX.4.4:PRODHSSYCAMORE->TRUMID).
+                                // Either way the schedule applies every day, exactly as before.
+                                if (days == null || days.size() == 0) {
+                                  return true;
+                                }
+
+                                // Unlike the 53002 connection window, this check can never span
+                                // midnight: the guard above requires startTotal <= currentTotal, so the
+                                // expected logon being tested always falls earlier on TODAY, for any
+                                // lookup_interval. There is therefore no previous-day case to handle
+                                // and the day to match is simply today.
+                                String logonDay = nyTime.getDayOfWeek().toString();
+
+                                for (def day: days) {
+                                  if (day.toString().equals(logonDay)) {
+                                    return true;
+                                  }
+                                }
+                                return false;
+                              """
+                            }
+                          }
+                        }
                       ]
                     }
                   },
@@ -39,18 +109,6 @@
                       "terms": {
                         "field": "target.keyword",
                         "size": 5000
-                      },
-                      "aggs": {
-                        "account": {
-                          "top_hits": {
-                            "size": 20,
-                            "_source": {
-                              "include": [
-                                "cloud.account.name"
-                              ]
-                            }
-                          }
-                        }
                       }
                     }
                   }
@@ -90,9 +148,8 @@
                             {
                               "terms": {
                                 "_tier": [
-                                  "data_hot",
-                                  "data_content",
-                                  "data_frozen"
+                                  "{{ ctx.metadata.data_hot }}",
+                                  "{{ ctx.metadata.data_content }}"
                                 ]
                               }
                             },
@@ -139,24 +196,6 @@
                           "terms": {
                             "field": "labels.fix_sessionid",
                             "size": 5000
-                          },
-                          "aggs": {
-                            "data": {
-                              "top_hits": {
-                                "size": 1,
-                                "_source": {
-                                  "include": [
-                                    "cloud.account.name",
-                                    "cloud.region"
-                                  ]
-                                }
-                              }
-                            },
-                            "min_time": {
-                              "min": {
-                                "field": "@timestamp"
-                              }
-                            }
                           }
                         }
                       }
@@ -218,8 +257,8 @@
         "params": {
           "input_data": """{
             "request": {
-              "subject": "TEST PLEASE IGNORE - {{ ctx.metadata.amdb_name }} Alert - {{ ctx.payload.key }} - {{ ctx.payload.cloud_account_name }}",
-              "description": "<h3>{{ ctx.metadata.amdb_name }}</h3> <p>Cloud Account: {{ ctx.payload.cloud_account_name }}</p> <p>Session ID: {{ ctx.payload.key }}</p> <p><a href='{{ctx.metadata.amdb_link}}'>AMDB</a></p> <p>To open the dashboard, please copy the link below</p> <p><font color=blue>{{ ctx.payload.dashboard_link }}</font></p>",
+              "subject": "{{ ctx.metadata.event_type }} - {{ ctx.metadata.service_name }} Alert - {{ ctx.payload.key }}",
+              "description": "<h3>{{ ctx.metadata.amdb_name }}</h3> <p>Session ID: {{ ctx.payload.key }}</p> <p><a href='{{ctx.metadata.amdb_link}}'>AMDB</a></p> <p>To open the dashboard, please copy the link below</p> <p>{{ ctx.payload.dashboard_link }}</p>",
               "requester": {
                 "name": "service-elastic"
               },
@@ -230,16 +269,13 @@
                 "name": "Report an Incident"
               },
               "priority": {
-                "name": "{{ ctx.payload.ticket_priority }}"
+                "name": "{{ ctx.metadata.ticket_priority }}"
               },
               "group": {
                 "name": "{{ ctx.metadata.ticket_group }}"
               },
               "status": {
-                "name": "Onhold"
-              },
-              "technician": {
-                "name": "Ola Ola"
+                "name": "Open"
               },
               "udf_fields": {
                 "udf_sline_49837": "{{ ctx.trigger.triggered_time }}",
@@ -248,8 +284,8 @@
                 "udf_sline_49805": "{{ ctx.payload.key }}",
                 "udf_sline_53703": "{{ ctx.metadata.service_name }}",
                 "udf_sline_55201": "",
-                "udf_sline_65102": "{{ ctx.payload.cloud_account_name }}",
-                "udf_sline_65104": "{{ ctx.payload.cloud_region }}"
+                "udf_sline_65102": "",
+                "udf_sline_65104": ""
               },
               "category": {
                 "name": "Elastic-AWS-MT"
@@ -259,7 +295,7 @@
         },
         "headers": {
           "Content-Type": "application/x-www-form-urlencoded",
-          "technician_key": "XXXXXXXXXXXXXXXXX"
+          "technician_key": "XXXXXXXX"
         }
       }
     }
@@ -270,110 +306,32 @@
     "ticket_priority": "1 - Critical",
     "amdb_link": "https://hedgeservcorp.sharepoint.com/sites/GlobalTechnology/AMDB/SitePages/53001.aspx",
     "data_content": "data_content",
-    "timeRangeUnit": "d",
+    "timeRangeUnit": "m",
     "event_type": "53001",
-    "ticket_group2": "Service Desk Operations",
-    "timeRangeValue": 27,
+    "timeRangeValue": 6,
     "dashboard_link": "https://XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.us-east-1.aws.found.io:9243/s/information-technology/app/discover#/view/admin_53001%20-%20FIX%20Initial%20Logon%20Failure?_g=(filters:!(),refreshInterval:(pause:!t,value:60000),time:(from:now-24h%2Fh,to:now))&_a=(columns:!(labels.fix_sessionid,labels.fix_event_handler_type,labels.fix_logon_success,cloud.account.name),dataSource:(dataViewId:'537f0c0a-3b04-5c03-8b9c-6eee829e73f8',type:dataView),filters:!(('$state':(store:appState),meta:(alias:!n,disabled:!f,field:service.name,index:'537f0c0a-3b04-5c03-8b9c-6eee829e73f8',key:service.name,negate:!f,params:(query:'CAVIAR%20FIX%20Gateway'),type:phrase),query:(match_phrase:(service.name:'CAVIAR%20FIX%20Gateway'))),('$state':(store:appState),meta:(alias:!n,disabled:!f,field:labels.fix_sessionid,index:'537f0c0a-3b04-5c03-8b9c-6eee829e73f8',key:labels.fix_sessionid,negate:!f,params:(query:'SESSION_REPLACEMENT'),type:phrase),query:(match_phrase:(labels.fix_sessionid:'SESSION_REPLACEMENT')))),grid:(),hideChart:!f,interval:auto,query:(language:kuery,query:'labels.fix_event_handler_type:%20%22OnLogon%22%20and%20labels.fix_logon_success:%20%22true%22'),sort:!(!('@timestamp',desc)))",
-    "ticket_group": "Monitoring and Analytics - Testing",
+    "ticket_group": "Service Desk Operations",
     "id": "sdpmt_53001",
     "lookup_interval": 5,
-    "data_hot": "data_hot",
-    "priority_by_account": {
-      "hedgeserv-app-prd": "1 - Critical",
-      "hedgeserv-app-tst": "3 - Moderate"
-    }
+    "data_hot": "data_hot"
   },
   "transform": {
     "script": {
       "source": """
-        // session -> cloud.account.name from fix_session_schedule (available even when the log is missing).
-        // Defensive: skip hosts whose schedule doc has no account populated, and handle both a
-        // nested {"cloud": {"account": {"name": "..."}}} shape and a flat {"cloud.account.name": "..."} shape.
-        // A target can match more than one schedule doc, so scan every returned hit instead of
-        // trusting hit 0 (whose order is arbitrary). If a target spans environments, escalate to prd.
-        Map session_to_account = new HashMap();
-        for (def bucket: ctx.payload.groups.aggregations.hosts.buckets) {
-          if (bucket.account == null || bucket.account.hits == null
-              || bucket.account.hits.hits == null) {
-            continue;
-          }
-          def chosen = null;
-          for (def hit: bucket.account.hits.hits) {
-            def source = hit._source;
-            if (source == null) {
-              continue;
-            }
-            def acct = null;
-            if (source instanceof Map && source.containsKey('cloud.account.name')) {
-              acct = source.get('cloud.account.name');
-            } else if (source.cloud != null && source.cloud.account != null) {
-              acct = source.cloud.account.name;
-            }
-            if (acct == null) {
-              continue;
-            }
-            if (chosen == null || acct == 'hedgeserv-app-prd') {
-              chosen = acct;
-            }
-          }
-          if (chosen != null) {
-            session_to_account.put(bucket.key, chosen);
-          }
-        }
-
-        // session -> errors bucket (present only when the log is present); used for cloud.region
-        Map session_details = new HashMap();
-        for (def bucket: ctx.payload.errors.aggregations.session_id.buckets) {
-          session_details.put(bucket.key, bucket);
-        }
-
-        // hoisted: read the priority map once (avoids repeatedly re-reading metadata inside the loop)
-        def priority_map = ctx.metadata.priority_by_account;
-
+        // store two lists of host buckets
         List to_open = [];
         for (def session: ctx.payload.sessions._value) {
           Map host = new HashMap();
           host.key = session;
           host.dashboard_link = ctx.metadata.dashboard_link.replace('SESSION_REPLACEMENT', host.key);
-
-          // account always comes from the schedule map (fix_session_schedule doesn't carry cloud.region,
-          // so region is enriched from the log bucket when present, otherwise blank).
-          // Use explicit get + null-check (getOrDefault sometimes hits a Painless whitelist quirk).
-          def looked_up_acct = session_to_account.get(session);
-          if (looked_up_acct != null) {
-            host.cloud_account_name = looked_up_acct;
-          } else {
-            host.cloud_account_name = '';
-          }
-
-          def bucket = session_details.get(session);
-          if (bucket != null) {
-            def source = bucket.data.hits.hits.0._source;
-            host.cloud_region = source.cloud.region;
-          } else {
-            host.cloud_region = '';
-          }
-
-          // priority driven by the cloud account via ctx.metadata.priority_by_account;
-          // falls back to ctx.metadata.ticket_priority if the account isn't mapped
-          def mapped_priority = null;
-          if (priority_map != null) {
-            mapped_priority = priority_map.get(host.cloud_account_name);
-          }
-          if (mapped_priority != null) {
-            host.ticket_priority = mapped_priority;
-          } else {
-            host.ticket_priority = ctx.metadata.ticket_priority;
-          }
-
           to_open.add(host);
         }
 
+        // replace payload with our two lists
         return [
           'to_open': to_open
         ];
-        """,
+      """,
       "lang": "painless"
     }
   }
